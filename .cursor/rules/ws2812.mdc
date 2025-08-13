@@ -1,0 +1,6 @@
+---
+description: WS2812 RGB LED驱动说明
+globs:
+alwaysApply: false
+---
+使用led_strip进行驱动，工作于RMT模式

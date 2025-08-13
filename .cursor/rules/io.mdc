@@ -1,0 +1,11 @@
+---
+description: IO端口说明
+alwaysApply: false
+---
+GPIO2: 电源电压，配置为ADC
+GPIO4: 恢复出厂设置按键
+GPIO10: 第二路RS485的TX
+GPIO11: 第二路RS485的RX
+GPIO12: 第一路RS485的TX
+GPIO13: 第一路RS485的RX
+GPIO21: WS2812 RGB LED
