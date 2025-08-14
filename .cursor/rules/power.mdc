@@ -1,7 +1,0 @@
----
-description: 系统的电源设计
-globs:
-alwaysApply: false
----
-
-电源检测分压为220K/910K+220K

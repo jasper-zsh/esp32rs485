@@ -1,18 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
-#include "freertos/FreeRTOS.h"
+#include "power_management.h"
+#include "ble.h"
 #include "freertos/task.h"
-#include "hal/adc_types.h"
 #include "led_strip.h"
-#include "esp_log.h"
-#include "esp_sleep.h"
-#include "esp_timer.h"
 
 #define WS2812_GPIO 21
 #define RESET_BUTTON_GPIO 4
@@ -26,99 +21,7 @@
 #define RS485_1_BAUD_RATE 9600
 #define RS485_1_BUF_SIZE 1024
 
-// ADC电源电压检测配置
-#define POWER_VOLTAGE_GPIO 2
-#define POWER_VOLTAGE_ATTEN ADC_ATTEN_DB_12  // 最大量程3.9V (ADC Oneshot模式)
-
-// 电源分压电路参数: 220K / (910K + 220K) = 220K / 1130K
-#define VOLTAGE_DIVIDER_R1 220000  // 分压电阻R1 (Ohm)
-#define VOLTAGE_DIVIDER_R2 910000  // 分压电阻R2 (Ohm)
-#define VOLTAGE_DIVIDER_OFFSET 0.2
-#define VOLTAGE_DIVIDER_RATIO ((float)VOLTAGE_DIVIDER_R1 / (VOLTAGE_DIVIDER_R1 + VOLTAGE_DIVIDER_R2))
-
-// 电源管理参数
-#define LOW_VOLTAGE_THRESHOLD_V 13.0f  // 低电压阈值（V）
-#define SLEEP_DURATION_US (1 * 1000 * 1000)  // 深度睡眠持续时间（微秒）- 1秒
-
 static const char *TAG = "ESP32_RS485";
-
-// ADC Oneshot句柄
-static adc_oneshot_unit_handle_t adc1_handle;
-static adc_cali_handle_t adc1_cali_handle;
-static adc_unit_t adc_unit;
-static adc_channel_t adc_channel;
-static bool adc_calibration_init = false;
-
-void configure_adc(void)
-{
-    ESP_ERROR_CHECK(adc_oneshot_io_to_channel(POWER_VOLTAGE_GPIO, &adc_unit, &adc_channel));
-    ESP_LOGI(TAG, "ADC单元：%d, ADC通道：%d", adc_unit, adc_channel);
-    
-    //-------------ADC1 Init---------------//
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = adc_unit,
-        .ulp_mode = ADC_ULP_MODE_DISABLE,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
-
-    //-------------ADC1 Config---------------//
-    adc_oneshot_chan_cfg_t config = {
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = POWER_VOLTAGE_ATTEN,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, adc_channel, &config));
-
-    //-------------ADC1 Calibration Init---------------//
-    adc1_cali_handle = NULL;
-    adc_cali_curve_fitting_config_t cali_config = {
-        .unit_id = adc_unit,
-        .chan = adc_channel,
-        .atten = POWER_VOLTAGE_ATTEN,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    esp_err_t ret = adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle);
-    if (ret == ESP_OK) {
-        adc_calibration_init = true;
-        ESP_LOGI(TAG, "ADC校准初始化成功 (Curve Fitting)");
-    } else {
-        ESP_LOGE(TAG, "ADC校准初始化错误: %s", esp_err_to_name(ret));
-        adc_calibration_init = false;
-    }
-
-    // 验证GPIO和ADC通道的对应关系
-    ESP_LOGI(TAG, "GPIO%d已配置为ADC1_CH%d，衰减系数：11dB", 
-             POWER_VOLTAGE_GPIO, adc_channel);
-
-    // 执行多次测试读取以验证ADC配置
-    ESP_LOGI(TAG, "开始ADC测试读取...");
-    
-    for (int i = 0; i < 5; i++) {
-        int adc_raw;
-        esp_err_t read_ret = adc_oneshot_read(adc1_handle, adc_channel, &adc_raw);
-        if (read_ret != ESP_OK) {
-            ESP_LOGE(TAG, "ADC读取失败: %s", esp_err_to_name(read_ret));
-            continue;
-        }
-        
-        int voltage_mv = 0;
-        if (adc_calibration_init) {
-            esp_err_t cal_ret = adc_cali_raw_to_voltage(adc1_cali_handle, adc_raw, &voltage_mv);
-            if (cal_ret != ESP_OK) {
-                ESP_LOGE(TAG, "ADC校准转换失败: %s", esp_err_to_name(cal_ret));
-                voltage_mv = (adc_raw * 3900) / 4095;  // 近似计算
-            }
-        } else {
-            voltage_mv = (adc_raw * 3900) / 4095;  // 近似计算
-        }
-        
-        ESP_LOGI(TAG, "ADC测试[%d]: 原始值=%d, 电压=%dmV", i+1, adc_raw, voltage_mv);
-        
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    
-    ESP_LOGI(TAG, "ADC电源电压检测初始化完成 (GPIO%d -> ADC1_CH%d)", 
-             POWER_VOLTAGE_GPIO, adc_channel);
-}
 
 void configure_rs485_uart1(void)
 {
@@ -177,45 +80,18 @@ led_strip_handle_t configure_led(void)
     return led_strip;
 }
 
-// 读取电源电压值
-float read_power_voltage(void)
-{
-    // 读取ADC原始值
-    int adc_raw;
-    esp_err_t ret = adc_oneshot_read(adc1_handle, adc_channel, &adc_raw);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ADC读取失败: %s", esp_err_to_name(ret));
-        return -1.0f;  // 返回错误值
-    }
-    
-    // 转换为ADC电压值 (mV)
-    int adc_voltage_mv = 0;
-    if (adc_calibration_init) {
-        ret = adc_cali_raw_to_voltage(adc1_cali_handle, adc_raw, &adc_voltage_mv);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "ADC校准转换失败: %s", esp_err_to_name(ret));
-            return -1.0f;  // 返回错误值
-        }
-    } else {
-        // 如果校准未初始化，使用近似计算
-        adc_voltage_mv = (adc_raw * 3900) / 4095;  // 假设11dB衰减，满量程3.9V
-    }
-    
-    // 根据分压电路计算实际电源电压 (V)
-    float real_voltage_v = ((float)adc_voltage_mv / 1000.0f) / VOLTAGE_DIVIDER_RATIO;
-    
-    ESP_LOGI(TAG, "电源电压: %.2f V, ADC电压: %d mV, ADC原始值: %d", 
-             real_voltage_v, adc_voltage_mv, adc_raw);
-    
-    return real_voltage_v;
-}
+
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "开始初始化ESP32 RS485系统...");
     
-    // 初始化ADC电源电压检测
-    configure_adc();
+    // 初始化电源管理系统
+    ESP_ERROR_CHECK(power_management_init());
+    try_to_deep_sleep();
+    
+    // 初始化BLE功能
+    ESP_ERROR_CHECK(ble_init());
     
     // 初始化RS485 UART1
     configure_rs485_uart1();
@@ -238,7 +114,7 @@ void app_main(void)
     
     while (1) {
         // 每秒读取一次电源电压
-        float voltage = read_power_voltage();
+        float voltage = power_read_voltage();
         
         if (voltage < 0) {
             ESP_LOGE(TAG, "电压读取失败，等待1秒后重试...");
@@ -247,17 +123,14 @@ void app_main(void)
         }
         
         // 检查电压是否低于阈值
-        if (voltage < LOW_VOLTAGE_THRESHOLD_V) {
+        if (power_is_voltage_low(voltage)) {
             ESP_LOGW(TAG, "电压过低 (%.2f V < %.2f V)，进入深度睡眠1秒...", voltage, LOW_VOLTAGE_THRESHOLD_V);
             
             // 清除LED状态
             ESP_ERROR_CHECK(led_strip_clear(led_strip));
             
-            // 配置定时器唤醒源 - 1秒后唤醒
-            esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
-            
             // 进入深度睡眠
-            esp_deep_sleep_start();
+            power_enter_deep_sleep(SLEEP_DURATION_US);
         }
         
         // 电压正常，进入正常工作模式1秒

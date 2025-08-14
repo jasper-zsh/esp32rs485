@@ -1,6 +1,0 @@
----
-description: RS485接口说明
-globs:
-alwaysApply: false
----
-两路RS485均使用内置的硬件UART进行驱动，第一路对应UART1，第二路对应UART2；

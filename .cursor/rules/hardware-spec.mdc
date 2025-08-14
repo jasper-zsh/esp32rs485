@@ -1,0 +1,21 @@
+---
+description: 硬件定义说明
+alwaysApply: false
+---
+# IO引脚
+GPIO2: 电源电压，配置为ADC
+GPIO4: 恢复出厂设置按键
+GPIO10: 第二路RS485的TX
+GPIO11: 第二路RS485的RX
+GPIO12: 第一路RS485的TX
+GPIO13: 第一路RS485的RX
+GPIO21: WS2812 RGB LED
+
+# 电源管理
+电源检测分压为220K/910K+220K
+
+# RS485
+两路RS485均使用内置的硬件UART进行驱动，第一路（RS485-1）对应UART1，第二路（RS485-2）对应UART2；
+
+# WS2812 RGB LED驱动说明
+使用led_strip进行驱动，工作于RMT模式
