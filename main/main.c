@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "power_management.h"
@@ -80,15 +81,12 @@ led_strip_handle_t configure_led(void)
     return led_strip;
 }
 
-
-
 void app_main(void)
 {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    awake();
+
     ESP_LOGI(TAG, "开始初始化ESP32 RS485系统...");
-    
-    // 初始化电源管理系统
-    ESP_ERROR_CHECK(power_management_init());
-    try_to_deep_sleep();
     
     // 初始化BLE功能
     ESP_ERROR_CHECK(ble_init());
@@ -111,30 +109,26 @@ void app_main(void)
     ESP_LOGI(TAG, "系统已初始化完成，开始电源监控循环...");
     
     int last_button_state = 1;  // 上次按键状态 (初始为高电平)
+    int button_press_count = 0;  // 按键按下持续计数器（每100ms检测一次）
+    const int FACTORY_RESET_THRESHOLD = 50;  // 5秒 = 50 * 100ms
     
     while (1) {
         // 每秒读取一次电源电压
-        float voltage = power_read_voltage();
-        
-        if (voltage < 0) {
-            ESP_LOGE(TAG, "电压读取失败，等待1秒后重试...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            continue;
-        }
+        uint16_t raw_voltage = power_ulp_get_raw_voltage();
         
         // 检查电压是否低于阈值
-        if (power_is_voltage_low(voltage)) {
-            ESP_LOGW(TAG, "电压过低 (%.2f V < %.2f V)，进入深度睡眠1秒...", voltage, LOW_VOLTAGE_THRESHOLD_V);
+        if (power_is_voltage_low(raw_voltage)) {
+            ESP_LOGW(TAG, "电压过低 (RAW(%d) )，进入深度睡眠1秒...", raw_voltage);
             
             // 清除LED状态
             ESP_ERROR_CHECK(led_strip_clear(led_strip));
             
             // 进入深度睡眠
-            power_enter_deep_sleep(SLEEP_DURATION_US);
+            power_enter_deep_sleep_with_ulp();
         }
         
         // 电压正常，进入正常工作模式1秒
-        ESP_LOGI(TAG, "电压正常 (%.2f V)，开始正常工作1秒...", voltage);
+        ESP_LOGI(TAG, "电压正常 RAW(%d)，开始正常工作1秒...", raw_voltage);
         
         // 在1秒内检测按键状态 (每100ms检测一次，共检测10次)
         for (int i = 0; i < 10; i++) {
@@ -142,11 +136,26 @@ void app_main(void)
             int button_state = gpio_get_level(RESET_BUTTON_GPIO);
             
             if (button_state == 0) {  // 按键被按下（低电平）
-                ESP_LOGI(TAG, "恢复出厂设置按键被按下，点亮绿色LED");
+                button_press_count++;
                 
-                // 设置LED为绿色 (由于GRB格式，参数顺序为: index, G, R, B)
-                ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 255, 0, 0));
-                ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+                if (button_press_count >= FACTORY_RESET_THRESHOLD) {
+                    // 按键按住5秒，执行恢复出厂设置
+                    ESP_LOGW(TAG, "恢复出厂设置按键按住5秒，清空已配对设备列表");
+                    ble_clear_paired_devices();
+                    
+                    // 设置LED为红色表示恢复出厂设置完成
+                    ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0, 255, 0));
+                    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+                    vTaskDelay(pdMS_TO_TICKS(1000));  // 红色LED显示1秒
+                    ESP_ERROR_CHECK(led_strip_clear(led_strip));
+                    
+                    button_press_count = 0;  // 重置计数器
+                } else {
+                    // 按键按下但未达到5秒，显示绿色LED
+                    ESP_LOGI(TAG, "恢复出厂设置按键被按下 (%d/50)，点亮绿色LED", button_press_count);
+                    ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 255, 0, 0));
+                    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+                }
                 
                 // 检测按键从高电平变为低电平的瞬间，发送RESET字符串
                 if (last_button_state == 1) {
@@ -156,6 +165,12 @@ void app_main(void)
                 }
                 
             } else {  // 按键未被按下（高电平）
+                // 如果按键释放，重置计数器
+                if (button_press_count > 0 && button_press_count < FACTORY_RESET_THRESHOLD) {
+                    ESP_LOGI(TAG, "按键释放，重置恢复出厂设置计数器");
+                    button_press_count = 0;
+                }
+                
                 // 关闭LED
                 ESP_ERROR_CHECK(led_strip_clear(led_strip));
             }

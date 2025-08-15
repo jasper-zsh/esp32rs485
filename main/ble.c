@@ -330,14 +330,18 @@ static void handle_settings_command(uint8_t *data, uint16_t len)
             
             uint8_t *mac_addr = &data[1];
             
+            // 当已配对设备列表为空时，允许任何设备执行配对操作
             if (g_paired_devices.count == 0) {
+                ESP_LOGI(TAG, "配对设备列表为空，允许任何设备配对");
                 add_paired_device(mac_addr);
                 send_response(cmd, NULL, 0);
             } else if (is_device_paired(current_client_mac)) {
+                // 仅允许已配对设备添加新的配对设备
+                ESP_LOGI(TAG, "已配对设备执行配对操作");
                 add_paired_device(mac_addr);
                 send_response(cmd, NULL, 0);
             } else {
-                ESP_LOGW(TAG, "未配对设备尝试添加配对");
+                ESP_LOGW(TAG, "未配对设备尝试添加配对，操作被拒绝");
                 send_response(cmd, NULL, 0);
             }
             break;
@@ -679,6 +683,14 @@ static void rs485_receive_task(void *pvParameters)
     }
     
     free(data);
+}
+
+/**
+ * @brief 清空已配对设备列表（恢复出厂设置使用）
+ */
+void ble_clear_paired_devices(void)
+{
+    clear_paired_devices();
 }
 
 /**

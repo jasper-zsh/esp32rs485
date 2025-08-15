@@ -12,4 +12,9 @@
  */
 esp_err_t ble_init(void);
 
+/**
+ * @brief 清空已配对设备列表（恢复出厂设置使用）
+ */
+void ble_clear_paired_devices(void);
+
 #endif // BLE_H
