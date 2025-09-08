@@ -2,7 +2,7 @@
 #include "ulp_riscv_utils.h"
 #include "ulp_riscv_adc_ulp_core.h"
 
-int32_t adc_threshold = 3000;
+int32_t adc_threshold = 2875;
 int32_t wakeup_result;
 int32_t last_result;
 

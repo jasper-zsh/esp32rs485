@@ -112,30 +112,61 @@ void app_main(void)
     int button_press_count = 0;  // 按键按下持续计数器（每100ms检测一次）
     const int FACTORY_RESET_THRESHOLD = 50;  // 5秒 = 50 * 100ms
     
+    // 低电压持续时间跟踪
+    int low_voltage_count = 0;  // 低电压持续计数器（每1秒检测一次）
+    const int LOW_VOLTAGE_THRESHOLD = 10;  // 10秒 = 10 * 1秒
+    
     while (1) {
         // 每秒读取一次电源电压
         uint16_t raw_voltage = power_ulp_get_raw_voltage();
         
         // 检查电压是否低于阈值
         if (power_is_voltage_low(raw_voltage)) {
-            ESP_LOGW(TAG, "电压过低 (RAW(%d) )，进入深度睡眠1秒...", raw_voltage);
+            low_voltage_count++;
+            ESP_LOGW(TAG, "电压过低 (RAW(%d))，持续时间: %d秒", raw_voltage, low_voltage_count);
             
-            // 清除LED状态
-            ESP_ERROR_CHECK(led_strip_clear(led_strip));
-            
-            // 进入深度睡眠
-            power_enter_deep_sleep_with_ulp();
+            // 检查是否达到10秒阈值
+            if (low_voltage_count >= LOW_VOLTAGE_THRESHOLD) {
+                ESP_LOGW(TAG, "电压过低超过10秒，进入深度睡眠...");
+                
+                // 清除LED状态
+                ESP_ERROR_CHECK(led_strip_clear(led_strip));
+                
+                // 进入深度睡眠
+                power_enter_deep_sleep_with_ulp();
+            }
+        } else {
+            // 电压正常，重置低电压计数器
+            if (low_voltage_count > 0) {
+                ESP_LOGI(TAG, "电压恢复正常，重置低电压计数器 (之前持续%d秒)", low_voltage_count);
+                low_voltage_count = 0;
+                // 清除LED状态
+                ESP_ERROR_CHECK(led_strip_clear(led_strip));
+            }
         }
         
-        // 电压正常，进入正常工作模式1秒
-        ESP_LOGI(TAG, "电压正常 RAW(%d)，开始正常工作1秒...", raw_voltage);
+        // 进入正常工作模式1秒（无论电压状态如何，都需要检测按键）
+        if (!power_is_voltage_low(raw_voltage)) {
+            ESP_LOGI(TAG, "电压正常 RAW(%d)，开始正常工作1秒...", raw_voltage);
+        } else {
+            ESP_LOGI(TAG, "电压过低但未超过10秒阈值，继续工作1秒...");
+        }
         
         // 在1秒内检测按键状态 (每100ms检测一次，共检测10次)
         for (int i = 0; i < 10; i++) {
             // 读取按键状态
             int button_state = gpio_get_level(RESET_BUTTON_GPIO);
             
-            if (button_state == 0) {  // 按键被按下（低电平）
+            // 处理低电压期间的LED闪烁（优先级最高）
+            if (power_is_voltage_low(raw_voltage) && low_voltage_count > 0) {
+                // 每200ms切换一次LED状态（在100ms循环中，偶数次点亮，奇数次熄灭）
+                if ((i % 2) == 0) {
+                    ESP_ERROR_CHECK(led_strip_set_pixel(led_strip, 0, 0, 255, 0));  // 红色
+                    ESP_ERROR_CHECK(led_strip_refresh(led_strip));
+                } else {
+                    ESP_ERROR_CHECK(led_strip_clear(led_strip));
+                }
+            } else if (button_state == 0) {  // 按键被按下（低电平）
                 button_press_count++;
                 
                 if (button_press_count >= FACTORY_RESET_THRESHOLD) {
@@ -171,8 +202,10 @@ void app_main(void)
                     button_press_count = 0;
                 }
                 
-                // 关闭LED
-                ESP_ERROR_CHECK(led_strip_clear(led_strip));
+                // 只有在电压正常且没有低电压状态时才关闭LED
+                if (!power_is_voltage_low(raw_voltage) || low_voltage_count == 0) {
+                    ESP_ERROR_CHECK(led_strip_clear(led_strip));
+                }
             }
             
             last_button_state = button_state;  // 更新上次按键状态
