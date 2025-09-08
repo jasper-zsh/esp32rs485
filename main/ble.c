@@ -14,6 +14,7 @@
 #include "esp_gatt_common_api.h"
 
 #include "driver/uart.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "BLE_RS485";
 
@@ -24,6 +25,9 @@ static const char *TAG = "BLE_RS485";
 #define RS485_1_CHAR_UUID       0xFFF1
 #define RS485_2_CHAR_UUID       0xFFF2
 
+// 开关控制引脚定义
+#define SWITCH_OUTPUT_GPIO      8
+
 // 配置项和指令枚举
 #define CONFIG_PAIRED_DEVICES   0x01
 #define CONFIG_RS485_MODES      0x02
@@ -32,6 +36,7 @@ static const char *TAG = "BLE_RS485";
 #define CMD_CLEAR_PAIR          0x03
 #define CMD_READ_CONFIG         0x04
 #define CMD_WRITE_CONFIG        0x05
+#define CMD_SWITCH_CONTROL      0x06
 
 // RS485模式枚举
 #define RS485_MODE_NONE         0x00
@@ -117,6 +122,11 @@ static void handle_rs485_data(uint8_t channel, uint8_t *data, uint16_t len);
 static void configure_rs485_uart2(void);
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
+
+// 开关控制相关函数声明
+void ble_init_switch_control(void);
+void ble_set_switch_state(uint8_t state);
+static void switch_control_task(void *pvParameters);
 
 /**
  * @brief 配置RS485第二路UART
@@ -466,6 +476,37 @@ static void handle_settings_command(uint8_t *data, uint16_t len)
             break;
         }
         
+        case CMD_SWITCH_CONTROL: {
+            if (len < 3) {
+                ESP_LOGW(TAG, "开关控制命令参数长度错误");
+                send_response(cmd, NULL, 0);
+                return;
+            }
+            
+            if (!is_device_paired(current_client_mac)) {
+                ESP_LOGW(TAG, "未配对设备尝试控制开关");
+                send_response(cmd, NULL, 0);
+                return;
+            }
+            
+            // 参数是2字节的开关导通时长（单位毫秒）
+            uint16_t duration = (data[1] << 8) | data[2];
+            ESP_LOGI(TAG, "开关控制命令，导通时长: %d毫秒", duration);
+            
+            // 收到指令表示将开关开启（导通），设置为低电平
+            ble_set_switch_state(0);
+            
+            // 如果时长为0，则不自动关闭
+            if (duration > 0) {
+                // 创建一个任务在指定时间后关闭开关
+                // 注意：实际项目中应该使用更高效的方式，比如定时器
+                xTaskCreate(switch_control_task, "switch_ctrl", 2048, (void*)(uint32_t)duration, 5, NULL);
+            }
+            
+            send_response(cmd, NULL, 0);
+            break;
+        }
+        
         default:
             ESP_LOGW(TAG, "未知命令: 0x%02X", cmd);
             send_response(cmd, NULL, 0);
@@ -684,6 +725,58 @@ static void rs485_receive_task(void *pvParameters)
     }
     
     free(data);
+}
+
+/**
+ * @brief 初始化开关控制GPIO
+ */
+void ble_init_switch_control(void)
+{
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL << SWITCH_OUTPUT_GPIO),
+        .pull_down_en = 0,
+        .pull_up_en = 0,
+    };
+    gpio_config(&io_conf);
+    
+    // 默认将开关设置为关断状态（高电平）
+    gpio_set_level(SWITCH_OUTPUT_GPIO, 1);
+    ESP_LOGI(TAG, "开关控制GPIO初始化完成，引脚: %d", SWITCH_OUTPUT_GPIO);
+}
+
+/**
+ * @brief 设置开关状态
+ * 
+ * @param state 开关状态 (0=导通/低电平, 1=关断/高电平)
+ */
+void ble_set_switch_state(uint8_t state)
+{
+    // 根据硬件设计，低电平导通开关，高电平关断开关
+    gpio_set_level(SWITCH_OUTPUT_GPIO, state ? 1 : 0);
+    ESP_LOGI(TAG, "设置开关状态: %s", state ? "关断(高电平)" : "导通(低电平)");
+}
+
+/**
+ * @brief 开关控制任务
+ * 
+ * @param pvParameters 开关导通时长（毫秒）
+ */
+static void switch_control_task(void *pvParameters)
+{
+    uint16_t duration = (uint32_t)pvParameters;
+    ESP_LOGI(TAG, "开关控制任务启动，将在%d毫秒后关断开关", duration);
+    
+    // 延时指定的时间
+    vTaskDelay(pdMS_TO_TICKS(duration));
+    
+    // 关断开关（高电平）
+    ble_set_switch_state(1);
+    ESP_LOGI(TAG, "开关控制任务完成，开关已关断");
+    
+    // 删除任务
+    vTaskDelete(NULL);
 }
 
 /**

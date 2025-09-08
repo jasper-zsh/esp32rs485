@@ -91,6 +91,9 @@ void app_main(void)
     // 初始化BLE功能
     ESP_ERROR_CHECK(ble_init());
     
+    // 初始化开关控制
+    ble_init_switch_control();
+    
     // 初始化RS485 UART1
     configure_rs485_uart1();
     
