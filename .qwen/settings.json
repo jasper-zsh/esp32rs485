@@ -1,0 +1,8 @@
+{
+  "mcpServers": [
+    {
+      "command": "uv",
+      "args": ["run", "--with", "fastmcp", "fastmcp", "run", "/home/jasper/Codes/espidf-mcp/app.py", "--no-banner"]
+    }
+  ]
+}
