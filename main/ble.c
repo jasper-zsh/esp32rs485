@@ -28,9 +28,7 @@ static const char *TAG = "BLE_RS485";
 // 开关控制引脚定义
 #define SWITCH_OUTPUT_GPIO      8
 
-// 配置项和指令枚举
-#define CONFIG_PAIRED_DEVICES   0x01
-#define CONFIG_RS485_MODES      0x02
+// 指令枚举
 #define CMD_PAIR                0x01
 #define CMD_UNPAIR              0x02
 #define CMD_CLEAR_PAIR          0x03
@@ -38,11 +36,12 @@ static const char *TAG = "BLE_RS485";
 #define CMD_WRITE_CONFIG        0x05
 #define CMD_SWITCH_CONTROL      0x06
 
+// 配置项枚举
+#define CONFIG_PAIRED_DEVICES   0x01
+
 // RS485模式枚举
 #define RS485_MODE_NONE         0x00
 #define RS485_MODE_RAW          0x01
-#define RS485_MODE_MODBUS_RTU   0x02
-#define RS485_MODE_MODBUS_ASCII 0x03
 
 // NVS和硬件配置
 #define NVS_NAMESPACE           "ble_config"
@@ -81,7 +80,6 @@ typedef struct {
 } rs485_modes_config_t;
 
 static paired_devices_config_t g_paired_devices = {0};
-static rs485_modes_config_t g_rs485_modes = {0};
 
 // BLE广播数据
 static esp_ble_adv_data_t adv_data = {
@@ -152,9 +150,7 @@ static void configure_rs485_uart2(void)
     ESP_LOGI(TAG, "RS485 UART2初始化完成，波特率: %d", RS485_2_BAUD_RATE);
 }
 
-/**
- * @brief 保存配置到NVS
- */
+/**\n * @brief 保存配置到NVS\n */
 static esp_err_t save_config_to_nvs(void)
 {
     nvs_handle_t nvs_handle;
@@ -167,13 +163,6 @@ static esp_err_t save_config_to_nvs(void)
     ret = nvs_set_blob(nvs_handle, NVS_KEY_PAIRED_DEVICES, &g_paired_devices, sizeof(paired_devices_config_t));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "保存配对设备列表失败: %s", esp_err_to_name(ret));
-        nvs_close(nvs_handle);
-        return ret;
-    }
-    
-    ret = nvs_set_blob(nvs_handle, NVS_KEY_RS485_MODES, &g_rs485_modes, sizeof(rs485_modes_config_t));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "保存RS485模式配置失败: %s", esp_err_to_name(ret));
         nvs_close(nvs_handle);
         return ret;
     }
@@ -204,16 +193,6 @@ static esp_err_t load_config_from_nvs(void)
         memset(&g_paired_devices, 0, sizeof(paired_devices_config_t));
     } else {
         ESP_LOGI(TAG, "已加载%d个配对设备", g_paired_devices.count);
-    }
-    
-    required_size = sizeof(rs485_modes_config_t);
-    ret = nvs_get_blob(nvs_handle, NVS_KEY_RS485_MODES, &g_rs485_modes, &required_size);
-    if (ret != ESP_OK) {
-        ESP_LOGI(TAG, "未找到RS485模式配置，使用默认配置");
-        memset(&g_rs485_modes, 0, sizeof(rs485_modes_config_t));
-    } else {
-        ESP_LOGI(TAG, "已加载RS485模式配置: 通道0=%d, 通道1=%d", 
-                g_rs485_modes.channel_0_mode, g_rs485_modes.channel_1_mode);
     }
     
     nvs_close(nvs_handle);
@@ -414,16 +393,6 @@ static void handle_settings_command(uint8_t *data, uint16_t len)
                     break;
                 }
                 
-                case CONFIG_RS485_MODES: {
-                    uint8_t response_data[4];
-                    response_data[0] = 0;
-                    response_data[1] = g_rs485_modes.channel_0_mode;
-                    response_data[2] = 1;
-                    response_data[3] = g_rs485_modes.channel_1_mode;
-                    send_response(cmd, response_data, 4);
-                    break;
-                }
-                
                 default:
                     ESP_LOGW(TAG, "未知配置类型: 0x%02X", config_type);
                     send_response(cmd, NULL, 0);
@@ -448,25 +417,7 @@ static void handle_settings_command(uint8_t *data, uint16_t len)
             uint8_t config_type = data[1];
             
             switch (config_type) {
-                case CONFIG_RS485_MODES: {
-                    for (int i = 2; i < len; i += 2) {
-                        if (i + 1 >= len) break;
-                        
-                        uint8_t channel = data[i];
-                        uint8_t mode = data[i + 1];
-                        
-                        if (channel == 0) {
-                            g_rs485_modes.channel_0_mode = mode;
-                            ESP_LOGI(TAG, "设置RS485通道0模式为: %d", mode);
-                        } else if (channel == 1) {
-                            g_rs485_modes.channel_1_mode = mode;
-                            ESP_LOGI(TAG, "设置RS485通道1模式为: %d", mode);
-                        }
-                    }
-                    save_config_to_nvs();
-                    send_response(cmd, NULL, 0);
-                    break;
-                }
+                
                 
                 default:
                     ESP_LOGW(TAG, "不支持写入的配置类型: 0x%02X", config_type);
@@ -524,32 +475,11 @@ static void handle_rs485_data(uint8_t channel, uint8_t *data, uint16_t len)
         return;
     }
     
-    uint8_t mode = (channel == 0) ? g_rs485_modes.channel_0_mode : g_rs485_modes.channel_1_mode;
     uart_port_t uart_port = (channel == 0) ? UART_NUM_1 : UART_NUM_2;
     
-    if (mode == RS485_MODE_NONE) {
-        ESP_LOGW(TAG, "RS485通道%d未设置模式", channel);
-        return;
-    }
-    
-    switch (mode) {
-        case RS485_MODE_RAW:
-            uart_write_bytes(uart_port, (const char*)data, len);
-            ESP_LOGI(TAG, "RS485通道%d发送RAW数据，长度: %d", channel, len);
-            break;
-            
-        case RS485_MODE_MODBUS_RTU:
-            ESP_LOGI(TAG, "RS485通道%d Modbus RTU模式 - 待实现", channel);
-            break;
-            
-        case RS485_MODE_MODBUS_ASCII:
-            ESP_LOGI(TAG, "RS485通道%d Modbus ASCII模式 - 待实现", channel);
-            break;
-            
-        default:
-            ESP_LOGW(TAG, "RS485通道%d未知模式: %d", channel, mode);
-            break;
-    }
+    // 直接发送原始数据
+    uart_write_bytes(uart_port, (const char*)data, len);
+    ESP_LOGI(TAG, "RS485通道%d发送RAW数据，长度: %d", channel, len);
 }
 
 /**
@@ -707,18 +637,14 @@ static void rs485_receive_task(void *pvParameters)
     while (1) {
         int len1 = uart_read_bytes(UART_NUM_1, data, 1024, 100 / portTICK_PERIOD_MS);
         if (len1 > 0 && is_connected) {
-            if (g_rs485_modes.channel_0_mode != RS485_MODE_NONE) {
-                esp_ble_gatts_send_indicate(gatts_if, conn_id, rs485_1_char_handle, len1, data, false);
-                ESP_LOGI(TAG, "RS485通道0接收到%d字节数据，已通过BLE发送", len1);
-            }
+            esp_ble_gatts_send_indicate(gatts_if, conn_id, rs485_1_char_handle, len1, data, false);
+            ESP_LOGI(TAG, "RS485通道0接收到%d字节数据，已通过BLE发送", len1);
         }
         
         int len2 = uart_read_bytes(UART_NUM_2, data, 1024, 100 / portTICK_PERIOD_MS);
         if (len2 > 0 && is_connected) {
-            if (g_rs485_modes.channel_1_mode != RS485_MODE_NONE) {
-                esp_ble_gatts_send_indicate(gatts_if, conn_id, rs485_2_char_handle, len2, data, false);
-                ESP_LOGI(TAG, "RS485通道1接收到%d字节数据，已通过BLE发送", len2);
-            }
+            esp_ble_gatts_send_indicate(gatts_if, conn_id, rs485_2_char_handle, len2, data, false);
+            ESP_LOGI(TAG, "RS485通道1接收到%d字节数据，已通过BLE发送", len2);
         }
         
         vTaskDelay(pdMS_TO_TICKS(50));
