@@ -117,7 +117,6 @@ static void clear_paired_devices(void);
 static void send_response(uint8_t cmd, uint8_t *data, uint16_t len);
 static void handle_settings_command(uint8_t *data, uint16_t len);
 static void handle_rs485_data(uint8_t channel, uint8_t *data, uint16_t len);
-static void configure_rs485_uart2(void);
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
 
@@ -129,27 +128,6 @@ static void switch_control_task(void *pvParameters);
 /**
  * @brief 配置RS485第二路UART
  */
-static void configure_rs485_uart2(void)
-{
-    uart_config_t uart_config = {
-        .baud_rate = RS485_2_BAUD_RATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    
-    ESP_ERROR_CHECK(uart_driver_install(RS485_2_UART_PORT, RS485_2_BUF_SIZE, 
-                                        RS485_2_BUF_SIZE, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(RS485_2_UART_PORT, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(RS485_2_UART_PORT, RS485_2_TX_GPIO, 
-                                 RS485_2_RX_GPIO, UART_PIN_NO_CHANGE, 
-                                 UART_PIN_NO_CHANGE));
-    
-    ESP_LOGI(TAG, "RS485 UART2初始化完成，波特率: %d", RS485_2_BAUD_RATE);
-}
-
 /**\n * @brief 保存配置到NVS\n */
 static esp_err_t save_config_to_nvs(void)
 {
@@ -728,7 +706,6 @@ esp_err_t ble_init(void)
     ESP_ERROR_CHECK(ret);
     
     load_config_from_nvs();
-    configure_rs485_uart2();
     
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
     

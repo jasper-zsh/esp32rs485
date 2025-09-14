@@ -22,6 +22,13 @@
 #define RS485_1_BAUD_RATE 9600
 #define RS485_1_BUF_SIZE 1024
 
+// RS485第二路配置 (对应UART2)
+#define RS485_2_TX_GPIO 10
+#define RS485_2_RX_GPIO 11
+#define RS485_2_UART_PORT UART_NUM_2
+#define RS485_2_BAUD_RATE 9600
+#define RS485_2_BUF_SIZE 1024
+
 static const char *TAG = "ESP32_RS485";
 
 void configure_rs485_uart1(void)
@@ -49,6 +56,33 @@ void configure_rs485_uart1(void)
                                  UART_PIN_NO_CHANGE));
     
     ESP_LOGI(TAG, "RS485 UART1初始化完成，波特率: %d", RS485_1_BAUD_RATE);
+}
+
+void configure_rs485_uart2(void)
+{
+    // 配置UART2参数
+    uart_config_t uart_config = {
+        .baud_rate = RS485_2_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    
+    // 安装UART驱动
+    ESP_ERROR_CHECK(uart_driver_install(RS485_2_UART_PORT, RS485_2_BUF_SIZE, 
+                                        RS485_2_BUF_SIZE, 0, NULL, 0));
+    
+    // 配置UART参数
+    ESP_ERROR_CHECK(uart_param_config(RS485_2_UART_PORT, &uart_config));
+    
+    // 设置UART引脚 (TX, RX, RTS, CTS)
+    ESP_ERROR_CHECK(uart_set_pin(RS485_2_UART_PORT, RS485_2_TX_GPIO, 
+                                 RS485_2_RX_GPIO, UART_PIN_NO_CHANGE, 
+                                 UART_PIN_NO_CHANGE));
+    
+    ESP_LOGI(TAG, "RS485 UART2初始化完成，波特率: %d", RS485_2_BAUD_RATE);
 }
 
 led_strip_handle_t configure_led(void)
@@ -96,6 +130,9 @@ void app_main(void)
     
     // 初始化RS485 UART1
     configure_rs485_uart1();
+    
+    // 初始化RS485 UART2
+    configure_rs485_uart2();
     
     // 初始化LED strip
     led_strip_handle_t led_strip = configure_led();
